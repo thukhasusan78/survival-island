@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Survival Island</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;display:flex;justify-content:center;align-items:center;min-height:100vh;font-family:'Courier New',monospace;color:#fff;overflow:hidden}
+#gameWrapper{position:relative;border:3px solid #4a6741;border-radius:8px;box-shadow:0 0 30px rgba(0,255,100,0.15)}
+canvas{display:block;background:#2d5a27;cursor:crosshair}
+#ui{position:absolute;top:-48px;left:0;right:0;height:45px;background:#1a1a2e;border-bottom:3px solid #4a6741;display:flex;align-items:center;padding:0 15px;gap:10px;font-size:14px}
+#ui span{color:#8f8;font-weight:bold}
+.bar{height:18px;border-radius:9px;overflow:hidden;background:#333;flex-shrink:0;border:1px solid #555}
+.bar-fill{height:100%;transition:width .15s;border-radius:9px}
+#hpBar .bar-fill{background:linear-gradient(90deg,#e74c3c,#c0392b);width:100%}
+#hungerBar .bar-fill{background:linear-gradient(90deg,#f39c12,#e67e22);width:100%}
+#thirstBar .bar-fill{background:linear-gradient(90deg,#3498db,#2980b9);width:100%}
+.bar-label{font-size:11px;color:#aaa;margin-right:4px}
+.stat{font-size:13px;color:#ffd700;margin:0 4px}
+#overlay{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;justify-content:center;align-items:center;background:rgba(0,0,0,0.7);z-index:10;flex-direction:column;gap:20px}
+#overlay h1{font-size:42px;color:#e74c3c;text-shadow:0 0 20px rgba(231,76,60,0.5)}
+#overlay p{font-size:18px;color:#ccc;max-width:400px;text-align:center;line-height:1.5}
+#overlay button{padding:14px 40px;font-size:20px;border:2px solid #4a6741;background:#2d5a27;color:#8f8;border-radius:8px;cursor:pointer;transition:.2s}
+#overlay button:hover{background:#3d7a37;transform:scale(1.05)}
+#controls{position:absolute;bottom:-50px;left:0;right:0;height:48px;background:#1a1a2e;border-top:3px solid #4a6741;display:flex;align-items:center;justify-content:center;gap:12px;color:#888;font-size:13px}
+kbd{background:#333;padding:2px 8px;border-radius:4px;border:1px solid #555;color:#ddd;font-size:12px}
+</style>
+</head>
+<body>
+<div id="gameWrapper">
+  <div id="ui">
+    <span>🏝️ SURVIVAL</span>
+    <div class="bar-label">❤️</div><div id="hpBar" class="bar" style="width:80px"><div class="bar-fill"></div></div>
+    <div class="bar-label">🍖</div><div id="hungerBar" class="bar" style="width:80px"><div class="bar-fill"></div></div>
+    <div class="bar-label">💧</div><div id="thirstBar" class="bar" style="width:80px"><div class="bar-fill"></div></div>
+    <span class="stat" id="dayDisplay">Day 1</span>
+    <span class="stat" id="scoreDisplay">🏆 0</span>
+  </div>
+  <canvas id="gameCanvas" width="700" height="500"></canvas>
+  <div id="overlay">
+    <h1>🏝️ SURVIVAL ISLAND</h1>
+    <p>Gather food 🍗 and water 💧 to survive.<br>Watch out for wolves 🐺 — they hunt at night!<br>Last as many days as you can.</p>
+    <button id="startBtn">▶ START GAME</button>
+  </div>
+  <div id="controls">
+    <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> or <kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd> move &nbsp;·&nbsp; <kbd>SPACE</kbd> attack
+  </div>
+</div>
+<script>
+const canvas=document.getElementById('gameCanvas');
+const ctx=canvas.getContext('2d');
+const W=700,H=500;
+
+// UI refs
+const hpFill=document.querySelector('#hpBar .bar-fill');
+const hungerFill=document.querySelector('#hungerBar .bar-fill');
+const thirstFill=document.querySelector('#thirstBar .bar-fill');
+const dayDisp=document.getElementById('dayDisplay');
+const scoreDisp=document.getElementById('scoreDisplay');
+const overlay=document.getElementById('overlay');
+const startBtn=document.getElementById('startBtn');
+
+let game={running:false,day:1,score:0,time:0,night:false,nightTimer:0};
+let player={x:350,y:250,hp:100,maxHp:100,hunger:100,thirst:100,size:10,speed:2.5,attack:15,invTimer:0};
+let items=[],wolves=[],particles=[];
+
+const keys={};
+document.addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;if(e.key===' ')e.preventDefault()});
+document.addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false});
+
+function rand(min,max){return Math.random()*(max-min)+min}
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+
+function spawnItem(){
+  let type=Math.random()<0.5?'food':'water';
+  items.push({x:rand(20,W-20),y:rand(20,H-20),type:type,size:7});
+}
+function spawnWolf(){
+  let side=Math.floor(rand(0,4));
+  let x,y;
+  if(side===0){x=rand(0,W);y=-15}
+  else if(side===1){x=W+15;y=rand(0,H)}
+  else if(side===2){x=rand(0,W);y=H+15}
+  else{x=-15;y=rand(0,H)}
+  let speed=rand(0.8,1.6)+(game.night?0.5:0);
+  wolves.push({x,y,size:12,hp:30,speed:speed,attack:8,hitTimer:0,dir:rand(0,Math.PI*2)});
+}
+
+function addParticles(x,y,color,count=8){
+  for(let i=0;i<count;i++){
+    let a=rand(0,Math.PI*2),spd=rand(1,3);
+    particles.push({x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,life:rand(15,30),maxLife:30,color});
+  }
+}
+
+function resetGame(){
+  player={x:350,y:250,hp:100,maxHp:100,hunger:100,thirst:100,size:10,speed:2.5,attack:15,invTimer:0};
+  items=[];wolves=[];particles=[];
+  game={running:true,day:1,score:0,time:0,night:false,nightTimer:0};
+  for(let i=0;i<8;i++)spawnItem();
+  overlay.style.display='none';
+}
+
+function gameOver(){
+  game.running=false;
+  overlay.style.display='flex';
+  overlay.innerHTML=`
+    <h1>💀 GAME OVER</h1>
+    <p>You survived <strong>${game.day-1}</strong> day${game.day-1!==1?'s':''} on the island!<br>Score: <strong>${game.score}</strong></p>
+    <button id="restartBtn">🔄 TRY AGAIN</button>
+  `;
+  const btn=document.getElementById('restartBtn');
+  btn.addEventListener('click',()=>{resetGame();btn.remove()});
+}
+
+function update(dt){
+  if(!game.running)return;
+  game.time+=dt;
+
+  // day/night cycle: 30s day, 20s night
+  let cycleTime=game.time%50;
+  game.night=cycleTime>30;
+  if(game.night)game.nightTimer+=dt;
+
+  // hunger/thirst decay
+  player.hunger-=0.08*dt;
+  player.thirst-=0.10*dt;
+
+  // damage from hunger/thirst
+  if(player.hunger<=0||player.thirst<=0){
+    player.hp-=0.15*dt;
+  }
+
+  // player movement
+  let dx=0,dy=0;
+  if(keys['w']||keys['arrowup'])dy=-1;
+  if(keys['s']||keys['arrowdown'])dy=1;
+  if(keys['a']||keys['arrowleft'])dx=-1;
+  if(keys['d']||keys['arrowright'])dx=1;
+  if(dx!==0||dy!==0){
+    let len=Math.hypot(dx,dy);
+    dx/=len;dy/=len;
+    player.x+=dx*player.speed*dt;
+    player.y+=dy*player.speed*dt;
+  }
+  player.x=Math.max(10,Math.min(W-10,player.x));
+  player.y=Math.max(10,Math.min(H-10,player.y));
+
+  if(player.invTimer>0)player.invTimer-=dt;
+
+  // collect items
+  for(let i=items.length-1;i>=0;i--){
+    let it=items[i];
+    if(dist(player,it)<18){
+      if(it.type==='food'){player.hunger=Math.min(100,player.hunger+35);addParticles(it.x,it.y,'#f39c12')}
+      else{player.thirst=Math.min(100,player.thirst+35);addParticles(it.x,it.y,'#3498db')}
+      items.splice(i,1);
+      spawnItem();
+      game.score+=10;
+    }
+  }
+
+  // wolf AI
+  for(let w of wolves){
+    if(w.hitTimer>0)w.hitTimer-=dt;
+    let dx=player.x-w.x,dy=player.y-w.y;
+    let d=Math.hypot(dx,dy);
+    if(d>1){
+      let spd=w.speed*(game.night?1.4:1);
+      w.x+=dx/d*spd*dt;
+      w.y+=dy/d*spd*dt;
+    }
+    if(d<22&&w.hitTimer<=0&&player.invTimer<=0){
+      player.hp-=w.attack;
+      player.invTimer=0.8;
+      w.hitTimer=0.6;
+      addParticles(player.x,player.y,'#e74c3c',12);
+      if(player.hp<=0){player.hp=0;gameOver();return}
+    }
+  }
+
+  // space attack
+  if(keys[' ']){
+    keys[' ']=false;
+    for(let i=wolves.length-1;i>=0;i--){
+      let w=wolves[i];
+      if(dist(player,w)<55){
+        w.hp-=player.attack;
+        addParticles(w.x,w.y,'#ff6b6b',15);
+        if(w.hp<=0){
+          wolves.splice(i,1);
+          game.score+=25;
+          addParticles(w.x,w.y,'#ff4444',20);
+        }
+      }
+    }
+  }
+
+  // spawn wolves
+  if(game.night){
+    if(wolves.length<4+Math.floor(game.day/2)&&Math.random()<0.008*dt)spawnWolf();
+  }else{
+    if(wolves.length<2&&Math.random()<0.002*dt)spawnWolf();
+  }
+
+  if(items.length<6&&Math.random()<0.005*dt)spawnItem();
+
+  // day transition
+  let newDay=Math.floor(game.time/50)+1;
+  if(newDay!==game.day){
+    game.day=newDay;
+    game.score+=50;
+    player.hp=Math.min(player.maxHp,player.hp+15);
+    player.hunger=Math.min(100,player.hunger+10);
+    player.thirst=Math.min(100,player.thirst+10);
+  }
+
+  for(let i=particles.length-1;i>=0;i--){
+    let p=particles[i];
+    p.x+=p.vx;p.y+=p.vy;p.vx*=0.95;p.vy*=0.95;p.life--;
+    if(p.life<=0)particles.splice(i,1);
+  }
+
+  player.hp=Math.max(0,Math.min(player.maxHp,player.hp));
+  player.hunger=Math.max(0,Math.min(100,player.hunger));
+  player.thirst=Math.max(0,Math.min(100,player.thirst));
+
+  hpFill.style.width=player.hp+'%';
+  hungerFill.style.width=player.hunger+'%';
+  thirstFill.style.width=player.thirst+'%';
+  dayDisp.textContent='Day '+game.day;
+  scoreDisp.textContent='🏆 '+game.score;
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle=game.night?'#1a3a1a':'#2d5a27';
+  ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle=game.night?'#2a5a2a':'#3a6a37';
+  ctx.lineWidth=0.5;
+  for(let x=0;x<W;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}
+  for(let y=0;y<H;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
+
+  for(let it of items){
+    ctx.save();
+    if(it.type==='food'){
+      ctx.shadowColor='rgba(243,156,18,0.3)';ctx.shadowBlur=6;
+      ctx.fillStyle='#f39c12';ctx.beginPath();ctx.arc(it.x,it.y,it.size,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#e67e22';ctx.beginPath();ctx.arc(it.x-2,it.y-1,it.size-3,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#fff';ctx.font='8px sans-serif';ctx.textAlign='center';ctx.fillText('🍗',it.x,it.y+3);
+    }else{
+      ctx.shadowColor='rgba(52,152,219,0.3)';ctx.shadowBlur=6;
+      ctx.fillStyle='#3498db';ctx.beginPath();ctx.arc(it.x,it.y,it.size,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#2980b9';ctx.beginPath();ctx.arc(it.x-1,it.y-1,it.size-2,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#fff';ctx.font='8px sans-serif';ctx.textAlign='center';ctx.fillText('💧',it.x,it.y+3);
+    }
+    ctx.restore();
+  }
+
+  for(let w of wolves){
+    ctx.save();
+    ctx.shadowColor='rgba(100,100,100,0.4)';ctx.shadowBlur=8;
+    ctx.fillStyle='#555';ctx.beginPath();ctx.arc(w.x,w.y,w.size,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#444';ctx.beginPath();ctx.arc(w.x-2,w.y-1,w.size-3,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#ff0';ctx.beginPath();ctx.arc(w.x-4,w.y-4,2.5,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(w.x+4,w.y-4,2.5,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#000';ctx.beginPath();ctx.arc(w.x-4,w.y-4,1.2,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(w.x+4,w.y-4,1.2,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#666';ctx.beginPath();ctx.moveTo(w.x-8,w.y-8);ctx.lineTo(w.x-5,w.y-14);ctx.lineTo(w.x-2,w.y-8);ctx.closePath();ctx.fill();
+    ctx.beginPath();ctx.moveTo(w.x+2,w.y-8);ctx.lineTo(w.x+5,w.y-14);ctx.lineTo(w.x+8,w.y-8);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#fff';ctx.font='10px sans-serif';ctx.textAlign='center';ctx.fillText('🐺',w.x,w.y+4);
+    if(w.hp<30){
+      ctx.fillStyle='#e74c3c';ctx.fillRect(w.x-12,w.y-16,24*(w.hp/30),3);
+    }
+    ctx.restore();
+  }
+
+  ctx.save();
+  ctx.shadowColor='rgba(46,204,113,0.4)';ctx.shadowBlur=10;
+  ctx.fillStyle='#2ecc71';ctx.beginPath();ctx.arc(player.x,player.y,player.size,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#27ae60';ctx.beginPath();ctx.arc(player.x-1,player.y-1,player.size-3,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(player.x-3,player.y-3,2.5,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(player.x+3,player.y-3,2.5,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#2ecc71';ctx.beginPath();ctx.arc(player.x-3,player.y-3,1.8,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(player.x+3,player.y-3,1.8,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#27ae60';ctx.beginPath();ctx.moveTo(player.x-10,player.y-10);ctx.lineTo(player.x,player.y-16);ctx.lineTo(player.x+10,player.y-10);ctx.closePath();ctx.fill();
+  if(player.invTimer>0&&Math.floor(player.invTimer*10)%2===0){
+    ctx.globalAlpha=0.4;
+  }
+  ctx.restore();
+
+  for(let p of particles){
+    ctx.save();
+    ctx.globalAlpha=p.life/p.maxLife;
+    ctx.fillStyle=p.color;
+    ctx.beginPath();ctx.arc(p.x,p.y,2,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+
+  if(game.night){
+    ctx.save();
+    let alpha=Math.min(0.45,0.15+(game.nightTimer*0.005));
+    ctx.fillStyle=`rgba(0,0,20,${alpha})`;
+    ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#ffe';ctx.shadowColor='rgba(255,255,200,0.3)';ctx.shadowBlur=20;
+    ctx.beginPath();ctx.arc(600,50,20,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#ddd';ctx.beginPath();ctx.arc(605,48,17,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.save();
+  ctx.fillStyle=game.night?'#aaf':'#ffd700';
+  ctx.font='bold 14px monospace';
+  ctx.textAlign='left';
+  ctx.fillText(game.night?'🌙 Night':'☀️ Day',10,20);
+  ctx.restore();
+}
+
+let lastTime=0;
+function loop(t){
+  let dt=Math.min((t-lastTime)/16.667,3);
+  lastTime=t;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+startBtn.addEventListener('click',()=>{
+  resetGame();
+  lastTime=performance.now();
+  requestAnimationFrame(loop);
+});
+
+draw();
+</script>
+</body>
+</html>
